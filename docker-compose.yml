@@ -1,0 +1,8 @@
+services:
+  cet6:
+    build: .
+    image: cet6-site:v1
+    container_name: cet6-site
+    ports:
+      - "8081:8080"
+    restart: unless-stopped

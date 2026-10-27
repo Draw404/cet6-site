@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>六级倒计时</title>
+<style>
+  body { font-family: sans-serif; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; background:#f5f6fa; }
+  .card { background:#fff; padding:2rem 3rem; border-radius:16px; box-shadow:0 4px 24px rgba(0,0,0,.08); text-align:center; }
+  .days { font-size:4rem; font-weight:bold; color:#2d6cdf; }
+  .quote { color:#555; margin-top:1rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div>距离 2026 年 12 月 12 日六级考试还有</div>
+  <div class="days"><span id="days">…</span> 天</div>
+  <div class="quote" id="quote"></div>
+  <div style="color:#999;font-size:.85rem" id="date"></div>
+</div>
+<script>
+fetch('/api/today').then(r => r.json()).then(d => {
+  document.getElementById('days').textContent = d.daysLeft;
+  document.getElementById('quote').textContent = '"' + d.quote + '"';
+  document.getElementById('date').textContent = '今天是 ' + d.date;
+});
+</script>
+</body>
+</html>
