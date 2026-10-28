@@ -19,10 +19,17 @@ import java.util.Map;
 
 /**
  * 六级小站：倒计时首页 + 艾宾浩斯背词模块。
- * 数据文件：DATA_DIR/words.json（默认 data/words.json），
- * 首次启动时若不存在，则从程序同目录的 words.json（种子）复制；
- * 之后种子里新增的词会在启动时自动并入数据文件，不影响已有复习进度。
+ * 数据文件：DATA_DIR/words.json（默认 data/words.json）。
+ * 种子分两种：程序同目录的 words.json 是「公开种子」（演示样例），仅在首次启动、
+ * 数据文件不存在时用来初始化词库，老用户不会被它影响；
+ * DATA_DIR/seed.json 是「个人种子」（使用者自己的词表，可含真题原句，只存本地 data/、
+ * 不进 Git），每次启动时把其中的新增词并入数据文件，不影响已有复习进度。
  * 写接口（复习打卡 / 加词）需要请求头 X-Vocab-Pass 与环境变量 VOCAB_PASS 一致。
+ * 当天重练（仿墨墨）：每个词每天的第一次作答决定当天记录与艾宾浩斯排期——
+ * 第一次就点「认识」直接按排期走、当天不再出现；第一次点「不认识」则当天记录为
+ * 不认识（排期按忘记处理），但这个词会在当天队列里反复出现，直到当天累计
+ * 「连续点对 INDAY_NEED 次」才算今日过关（重练中的作答只影响连对计数，
+ * 不改排期、不额外增加 lapses）。重练状态存在词条数据里，刷新/重启不丢。
  */
 public class App {
 
@@ -30,10 +37,13 @@ public class App {
     static final LocalDate EXAM_DATE = LocalDate.of(2026, 12, 12);
     // 艾宾浩斯复习节点：学会后第 1、2、4、7、15、30 天各复习一次，共 6 轮
     static final int[] OFFSETS = {1, 2, 4, 7, 15, 30};
+    // 当天答错后，需要在当天连续点对几次「认识」才算今日过关（记录仍为不认识）
+    static final int INDAY_NEED = 3;
 
     static final Path DATA_DIR = Paths.get(System.getenv().getOrDefault("DATA_DIR", "data"));
     static final Path DATA_FILE = DATA_DIR.resolve("words.json");
     static final Path SEED_FILE = Paths.get("words.json");
+    static final Path PERSONAL_SEED_FILE = DATA_DIR.resolve("seed.json");
     static final String PASS = System.getenv("VOCAB_PASS");
 
     static final Object LOCK = new Object();
@@ -47,6 +57,10 @@ public class App {
         String due = null;       // 下次复习日期，未排期/已毕业为 null
         int stage = 0;           // 已完成的复习轮数 0..6
         int lapses = 0;          // 点过「不认识」的次数
+        String day = null;       // 最近一次「当天首答」的日期 yyyy-MM-dd
+        String dayResult = "";   // 当天首答结果："pass"=第一次就认识 / "fail"=第一次不认识
+        int dayStreak = 0;       // 当天重练中已连续点对的次数（仅 dayResult=fail 时有意义）
+        boolean dayDone = false; // 今天是否已完成（首答认识、或重练连对达标）
 
         Map<String, Object> toMap() {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -62,6 +76,10 @@ public class App {
             m.put("due", due);
             m.put("stage", stage);
             m.put("lapses", lapses);
+            m.put("day", day);
+            m.put("dayResult", dayResult);
+            m.put("dayStreak", dayStreak);
+            m.put("dayDone", dayDone);
             return m;
         }
 
@@ -79,6 +97,10 @@ public class App {
             w.due = m.get("due") == null ? null : str(m.get("due"));
             w.stage = num(m.get("stage"));
             w.lapses = num(m.get("lapses"));
+            w.day = m.get("day") == null ? null : str(m.get("day"));
+            w.dayResult = str(m.get("dayResult"));
+            w.dayStreak = num(m.get("dayStreak"));
+            w.dayDone = bool(m.get("dayDone"));
             return w;
         }
     }
@@ -88,6 +110,11 @@ public class App {
     static int num(Object o) {
         if (o instanceof Number) return ((Number) o).intValue();
         try { return Integer.parseInt(str(o)); } catch (Exception e) { return 0; }
+    }
+
+    static boolean bool(Object o) {
+        if (o instanceof Boolean) return (Boolean) o;
+        return "true".equals(str(o));
     }
 
     // ---------------- 极简 JSON ----------------
@@ -257,25 +284,31 @@ public class App {
 
     static void loadWords() throws IOException {
         Files.createDirectories(DATA_DIR);
-        if (!Files.exists(DATA_FILE) && Files.exists(SEED_FILE)) {
+        boolean freshInit = !Files.exists(DATA_FILE);
+        if (freshInit && Files.exists(SEED_FILE)) {
             Files.copy(SEED_FILE, DATA_FILE);
-            System.out.println("已从种子文件初始化词库：" + DATA_FILE);
+            System.out.println("已从公开种子初始化词库：" + DATA_FILE);
         }
         words = Files.exists(DATA_FILE) ? readWordFile(DATA_FILE) : new ArrayList<>();
-        // 并入种子中的新增词（按词条名不区分大小写判重），不影响已有进度
-        if (Files.exists(SEED_FILE)) {
-            List<WordRec> seed = readWordFile(SEED_FILE);
-            boolean changed = false;
-            for (WordRec sw : seed) {
-                if (findWord(sw.word) == null && !sw.word.isBlank()) {
-                    words.add(sw);
-                    changed = true;
-                    System.out.println("并入新词：" + sw.word);
-                }
-            }
-            if (changed) saveWords();
+        // 个人种子（data/seed.json）每次启动并入新增词（按词条名不区分大小写判重），不影响已有进度。
+        // 公开种子只在首次初始化时用（已在上面复制），老用户不会被演示样例影响。
+        if (Files.exists(PERSONAL_SEED_FILE)) {
+            mergeSeed(PERSONAL_SEED_FILE);
         }
         System.out.println("词库共 " + words.size() + " 个词");
+    }
+
+    static void mergeSeed(Path seedPath) throws IOException {
+        List<WordRec> seed = readWordFile(seedPath);
+        boolean changed = false;
+        for (WordRec sw : seed) {
+            if (findWord(sw.word) == null && !sw.word.isBlank()) {
+                words.add(sw);
+                changed = true;
+                System.out.println("并入新词（个人种子）：" + sw.word);
+            }
+        }
+        if (changed) saveWords();
     }
 
     static WordRec findWord(String word) {
@@ -313,6 +346,52 @@ public class App {
             if (!next.isAfter(today)) next = today.plusDays(1);
             w.due = next.toString();
         }
+    }
+
+    // 是否正处在「当天重练未过关」状态：首答在今天、首答不认识、还没连对达标
+    static boolean isDrilling(WordRec w, LocalDate today) {
+        return today.toString().equals(w.day) && "fail".equals(w.dayResult) && !w.dayDone;
+    }
+
+    /**
+     * 处理一次作答。返回 {first, done, streak, need}：
+     * first=是不是当天第一次作答；done=这个词今天是否可以收工；
+     * streak=当前连对次数；need=过关所需连对次数。
+     * 规则：当天首答决定记录与排期（走 applyReview）；首答不认识后进入重练，
+     * 重练中的作答只动连对计数，不改排期、不加 lapses，连对达 INDAY_NEED 次过关。
+     */
+    static Map<String, Object> handleReview(WordRec w, boolean known, LocalDate today) {
+        Map<String, Object> r = new LinkedHashMap<>();
+        String todayStr = today.toString();
+        if (!todayStr.equals(w.day)) {
+            // 当天第一次作答：定记录、定排期
+            applyReview(w, known, today);
+            w.day = todayStr;
+            w.dayResult = known ? "pass" : "fail";
+            w.dayStreak = 0;
+            w.dayDone = known;
+            r.put("first", true);
+            r.put("done", known);
+            r.put("streak", 0);
+        } else if (isDrilling(w, today)) {
+            // 当天重练中：只记连对
+            if (known) {
+                w.dayStreak++;
+                if (w.dayStreak >= INDAY_NEED) w.dayDone = true;
+            } else {
+                w.dayStreak = 0; // 重练中又点不认识：连对清零
+            }
+            r.put("first", false);
+            r.put("done", w.dayDone);
+            r.put("streak", w.dayStreak);
+        } else {
+            // 今天已经收工（首答认识、或重练已过关），重复提交直接忽略
+            r.put("first", false);
+            r.put("done", true);
+            r.put("streak", w.dayStreak);
+        }
+        r.put("need", INDAY_NEED);
+        return r;
     }
 
     // ---------------- HTTP 工具 ----------------
@@ -358,7 +437,7 @@ public class App {
                 graduated++;
             } else {
                 learning++;
-                if (!LocalDate.parse(w.due).isAfter(today)) due++;
+                if (!LocalDate.parse(w.due).isAfter(today) || isDrilling(w, today)) due++;
             }
         }
         Map<String, Object> c = new LinkedHashMap<>();
@@ -417,7 +496,8 @@ public class App {
                             for (WordRec w : words) {
                                 if (w.learned == null) {
                                     if (!LocalDate.parse(w.added).isAfter(today)) fresh.add(w.toMap());
-                                } else if (w.due != null && !LocalDate.parse(w.due).isAfter(today)) {
+                                } else if (w.due != null && (!LocalDate.parse(w.due).isAfter(today) || isDrilling(w, today))) {
+                                    // 到期词 + 今天首答不认识、还在重练的词（排期虽在明天，今天仍要练完）
                                     due.add(w.toMap());
                                 }
                             }
@@ -427,6 +507,7 @@ public class App {
                         m.put("due", due);
                         m.put("fresh", fresh);
                         m.put("counts", counts(today));
+                        m.put("indayNeed", INDAY_NEED);
                         sendJson(ex, 200, m);
                         break;
                     }
@@ -449,11 +530,13 @@ public class App {
                         synchronized (LOCK) {
                             WordRec w = findWord(word);
                             if (w == null) { sendJson(ex, 404, error("词不存在：" + word)); break; }
-                            applyReview(w, known, LocalDate.now(ZONE));
+                            LocalDate today = LocalDate.now(ZONE);
+                            Map<String, Object> r = handleReview(w, known, today);
                             saveWords();
                             Map<String, Object> m = new LinkedHashMap<>();
                             m.put("word", w.toMap());
-                            m.put("counts", counts(LocalDate.now(ZONE)));
+                            m.put("counts", counts(today));
+                            m.putAll(r);
                             sendJson(ex, 200, m);
                         }
                         break;

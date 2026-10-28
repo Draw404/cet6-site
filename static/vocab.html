@@ -16,6 +16,8 @@
   .card { background: #fff; border-radius: 16px; box-shadow: 0 4px 18px rgba(0,0,0,.08); padding: 28px 22px; min-height: 300px; display: flex; flex-direction: column; }
   .tag { align-self: flex-start; font-size: 12px; color: #fff; background: #2b6cb0; border-radius: 20px; padding: 3px 10px; margin-bottom: 14px; }
   .tag.fresh { background: #38a169; }
+  .tag.retry { background: #dd6b20; }
+  .note { text-align: center; color: #b7791f; font-size: 13px; margin-top: 8px; min-height: 18px; }
   .word { font-size: 34px; font-weight: 700; line-height: 1.2; }
   .phonetic { color: #888; font-size: 16px; margin-top: 4px; }
   .pos { color: #555; font-size: 14px; margin-top: 6px; }
@@ -55,13 +57,14 @@
 <body>
 <div class="wrap">
   <h1>📚 六级背词</h1>
-  <div class="sub">艾宾浩斯排期：第 1、2、4、7、15、30 天各复习一次，六轮全过毕业</div>
+  <div class="sub">艾宾浩斯排期：第 1、2、4、7、15、30 天各复习一次，六轮全过毕业<br>当天第一次点「不认识」的词，今天会反复出现，连对 3 次才算过关（当天记录仍为不认识）</div>
   <div class="stats" id="stats"></div>
 
   <div class="card" id="card">
     <div class="done" id="loading"><div class="big">⏳</div><p>加载今日任务中…</p></div>
   </div>
   <div class="progress" id="progress"></div>
+  <div class="note" id="note"></div>
 
   <div class="panel" id="addPanel">
     <h2>➕ 添加新词</h2>
@@ -88,6 +91,9 @@
 
 <script>
 let queue = [], idx = 0, current = null;
+let todayStr = '', indayNeed = 3;
+
+function setNote(t) { document.getElementById('note').textContent = t || ''; }
 
 function pass() {
   let p = localStorage.getItem('vocabPass');
@@ -136,6 +142,8 @@ function renderStats(c) {
 
 async function loadToday() {
   const data = await api('/api/vocab/today');
+  todayStr = data.date;
+  if (data.indayNeed) indayNeed = data.indayNeed;
   renderStats(data.counts);
   queue = data.due.map(w => ({...w, kind: 'review'}))
     .concat(data.fresh.map(w => ({...w, kind: 'fresh'})));
@@ -155,9 +163,20 @@ function showCard() {
   }
   current = queue[idx];
   const isReview = current.kind === 'review';
-  const tag = isReview ? ('复习 · 第 ' + (current.stage + 1) + ' 轮') : '新词';
+  const drilling = current.day === todayStr && current.dayResult === 'fail' && !current.dayDone;
+  let tag, tagCls;
+  if (drilling) {
+    tag = '今日重练 · 已连对 ' + (current.dayStreak || 0) + '/' + indayNeed;
+    tagCls = ' retry';
+  } else if (isReview) {
+    tag = '复习 · 第 ' + (current.stage + 1) + ' 轮';
+    tagCls = '';
+  } else {
+    tag = '新词';
+    tagCls = ' fresh';
+  }
   card.innerHTML =
-    '<div class="tag' + (isReview ? '' : ' fresh') + '">' + tag + '</div>' +
+    '<div class="tag' + tagCls + '">' + tag + '</div>' +
     '<div class="word">' + esc(current.word) + '</div>' +
     (current.phonetic ? '<div class="phonetic">' + esc(current.phonetic) + '</div>' : '') +
     (current.pos ? '<div class="pos">' + esc(current.pos) + '</div>' : '') +
@@ -191,7 +210,28 @@ async function review(known) {
     });
     if (data.error) { alert(data.error); return; }
     renderStats(data.counts);
-    idx++;
+    const item = queue[idx];
+    Object.assign(item, data.word); // 同步服务器上的最新状态（含重练计数）
+    if (!data.done) {
+      // 今天还没过关：把这个词从当前位置拿走，插到后面几张之后再出现
+      if (data.first) {
+        setNote('「' + item.word + '」今天先记为不认识，隔几个词会再出现；今天连对 ' + data.need + ' 次才算过关，今天的记录不变。');
+      } else if (!known) {
+        setNote('「' + item.word + '」连对清零，继续重练。');
+      } else {
+        setNote('「' + item.word + '」已连对 ' + data.streak + '/' + data.need + '，还差 ' + (data.need - data.streak) + ' 次。');
+      }
+      queue.splice(idx, 1);
+      const insertAt = Math.min(idx + 3, queue.length);
+      queue.splice(insertAt, 0, item);
+    } else {
+      if (data.first === false && item.dayResult === 'fail') {
+        setNote('「' + item.word + '」重练过关 🎉 今天记录仍为不认识，明天会再复习它。');
+      } else {
+        setNote('');
+      }
+      idx++;
+    }
     showCard();
     loadList();
   } catch (e) { alert(e.message); }
