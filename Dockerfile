@@ -7,6 +7,7 @@ FROM eclipse-temurin:17-jdk
 WORKDIR /app
 COPY --from=build /src/app.jar .
 COPY quotes.txt .
+COPY words.json .
 COPY static ./static
 EXPOSE 8080
 CMD ["java", "-jar", "app.jar"]

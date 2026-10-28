@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>六级背词 · 艾宾浩斯复习</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f2f4f8; color: #222; min-height: 100vh; }
+  .wrap { max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; text-align: center; margin: 8px 0 4px; }
+  .sub { text-align: center; color: #667; font-size: 13px; margin-bottom: 16px; }
+  .stats { display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat { background: #fff; border-radius: 10px; padding: 8px 14px; font-size: 13px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  .stat b { font-size: 17px; color: #2b6cb0; }
+  .card { background: #fff; border-radius: 16px; box-shadow: 0 4px 18px rgba(0,0,0,.08); padding: 28px 22px; min-height: 300px; display: flex; flex-direction: column; }
+  .tag { align-self: flex-start; font-size: 12px; color: #fff; background: #2b6cb0; border-radius: 20px; padding: 3px 10px; margin-bottom: 14px; }
+  .tag.fresh { background: #38a169; }
+  .word { font-size: 34px; font-weight: 700; line-height: 1.2; }
+  .phonetic { color: #888; font-size: 16px; margin-top: 4px; }
+  .pos { color: #555; font-size: 14px; margin-top: 6px; }
+  .source { color: #aaa; font-size: 12px; margin-top: 10px; }
+  .answer { margin-top: 20px; border-top: 1px dashed #ddd; padding-top: 16px; display: none; }
+  .answer.show { display: block; }
+  .meaning { font-size: 18px; font-weight: 600; color: #1a202c; }
+  .sentence { margin-top: 12px; font-size: 15px; line-height: 1.6; color: #333; }
+  .sentence b { color: #c53030; }
+  .sentenceCn { margin-top: 8px; font-size: 14px; line-height: 1.6; color: #666; }
+  .btns { display: flex; gap: 10px; margin-top: 18px; }
+  button { flex: 1; border: none; border-radius: 10px; padding: 13px 10px; font-size: 16px; cursor: pointer; }
+  .btn-show { background: #2b6cb0; color: #fff; width: 100%; }
+  .btn-know { background: #38a169; color: #fff; display: none; }
+  .btn-dunno { background: #e53e3e; color: #fff; display: none; }
+  .answer.show ~ .btns .btn-know, .answer.show ~ .btns .btn-dunno { display: block; }
+  .progress { text-align: center; color: #888; font-size: 13px; margin-top: 12px; }
+  .done { text-align: center; padding: 30px 0; }
+  .done .big { font-size: 40px; margin-bottom: 10px; }
+  .panel { background: #fff; border-radius: 14px; box-shadow: 0 2px 8px rgba(0,0,0,.05); margin-top: 18px; padding: 16px; }
+  .panel h2 { font-size: 16px; margin-bottom: 10px; cursor: pointer; }
+  .panel .body { display: none; }
+  .panel.open .body { display: block; }
+  label { display: block; font-size: 13px; color: #555; margin: 8px 0 4px; }
+  input, textarea { width: 100%; border: 1px solid #ccc; border-radius: 8px; padding: 9px; font-size: 14px; font-family: inherit; }
+  .btn-add { background: #805ad5; color: #fff; width: 100%; margin-top: 12px; }
+  .msg { font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .wrow { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+  .wrow .w { font-weight: 600; }
+  .wrow .m { color: #666; flex: 1; margin: 0 10px; font-size: 13px; }
+  .badge { font-size: 11px; border-radius: 12px; padding: 2px 8px; background: #ebf4ff; color: #2b6cb0; white-space: nowrap; }
+  .badge.grad { background: #f0fff4; color: #276749; }
+  .badge.fresh { background: #f0fff4; color: #276749; }
+  a.home { display: block; text-align: center; margin-top: 20px; color: #2b6cb0; font-size: 14px; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📚 六级背词</h1>
+  <div class="sub">艾宾浩斯排期：第 1、2、4、7、15、30 天各复习一次，六轮全过毕业</div>
+  <div class="stats" id="stats"></div>
+
+  <div class="card" id="card">
+    <div class="done" id="loading"><div class="big">⏳</div><p>加载今日任务中…</p></div>
+  </div>
+  <div class="progress" id="progress"></div>
+
+  <div class="panel" id="addPanel">
+    <h2>➕ 添加新词</h2>
+    <div class="body">
+      <label>单词/短语 *</label><input id="f-word" placeholder="如：resilient">
+      <label>音标</label><input id="f-phonetic" placeholder="如：/rɪˈzɪliənt/">
+      <label>词性</label><input id="f-pos" placeholder="如：adj.">
+      <label>意思（语境义）*</label><input id="f-meaning" placeholder="如：有韧性的；能快速恢复的">
+      <label>原句</label><textarea id="f-sentence" rows="3"></textarea>
+      <label>原句翻译</label><textarea id="f-sentenceCn" rows="2"></textarea>
+      <label>出处</label><input id="f-source" placeholder="如：阅读·2025.12 第一套 Section C 第一篇 P2">
+      <button class="btn-add" id="btnAdd">添加到词库</button>
+      <div class="msg" id="addMsg"></div>
+    </div>
+  </div>
+
+  <div class="panel" id="listPanel">
+    <h2>📖 全部词条</h2>
+    <div class="body" id="wordList"></div>
+  </div>
+
+  <a class="home" href="/">← 回到倒计时首页</a>
+</div>
+
+<script>
+let queue = [], idx = 0, current = null;
+
+function pass() {
+  let p = localStorage.getItem('vocabPass');
+  if (!p) {
+    p = prompt('输入背词口令（部署时在服务器 .env 里设置的 VOCAB_PASS）：');
+    if (p) localStorage.setItem('vocabPass', p);
+  }
+  return p;
+}
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) {
+    localStorage.removeItem('vocabPass');
+    throw new Error('口令不对，请刷新页面后重新输入');
+  }
+  return r.json();
+}
+
+function esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function highlight(sentence, word) {
+  const s = esc(sentence);
+  if (!word) return s;
+  const i = s.toLowerCase().indexOf(word.toLowerCase());
+  if (i >= 0) return s.slice(0, i) + '<b>' + s.slice(i, i + word.length) + '</b>' + s.slice(i + word.length);
+  return s;
+}
+
+function stageLabel(w) {
+  if (w.learned === null) return '新词';
+  if (w.due === null) return '已毕业 🎓';
+  return '第 ' + (w.stage + 1) + ' 轮 · 下次 ' + w.due.slice(5);
+}
+
+function renderStats(c) {
+  document.getElementById('stats').innerHTML =
+    '<div class="stat">待复习 <b>' + c.due + '</b></div>' +
+    '<div class="stat">新词 <b>' + c.fresh + '</b></div>' +
+    '<div class="stat">复习中 <b>' + c.learning + '</b></div>' +
+    '<div class="stat">已毕业 <b>' + c.graduated + '</b></div>' +
+    '<div class="stat">总词数 <b>' + c.total + '</b></div>';
+}
+
+async function loadToday() {
+  const data = await api('/api/vocab/today');
+  renderStats(data.counts);
+  queue = data.due.map(w => ({...w, kind: 'review'}))
+    .concat(data.fresh.map(w => ({...w, kind: 'fresh'})));
+  idx = 0;
+  showCard();
+  loadList();
+}
+
+function showCard() {
+  const card = document.getElementById('card');
+  const prog = document.getElementById('progress');
+  if (idx >= queue.length) {
+    card.innerHTML = '<div class="done"><div class="big">🎉</div><p>今日任务全部完成！</p>' +
+      '<p style="color:#888;font-size:14px;margin-top:6px;">明早再来，艾宾浩斯会把到期的词准时送回来。</p></div>';
+    prog.textContent = '';
+    return;
+  }
+  current = queue[idx];
+  const isReview = current.kind === 'review';
+  const tag = isReview ? ('复习 · 第 ' + (current.stage + 1) + ' 轮') : '新词';
+  card.innerHTML =
+    '<div class="tag' + (isReview ? '' : ' fresh') + '">' + tag + '</div>' +
+    '<div class="word">' + esc(current.word) + '</div>' +
+    (current.phonetic ? '<div class="phonetic">' + esc(current.phonetic) + '</div>' : '') +
+    (current.pos ? '<div class="pos">' + esc(current.pos) + '</div>' : '') +
+    (current.source ? '<div class="source">' + esc(current.source) + '</div>' : '') +
+    '<div class="answer" id="answer">' +
+      '<div class="meaning">' + esc(current.meaning) + '</div>' +
+      (current.sentence ? '<div class="sentence">' + highlight(current.sentence, current.word) + '</div>' : '') +
+      (current.sentenceCn ? '<div class="sentenceCn">' + esc(current.sentenceCn) + '</div>' : '') +
+    '</div>' +
+    '<div class="btns">' +
+      '<button class="btn-dunno" id="btnDunno">❌ 不认识</button>' +
+      '<button class="btn-know" id="btnKnow">✅ 认识</button>' +
+    '</div>' +
+    '<div class="btns"><button class="btn-show" id="btnShow">显示意思和原句</button></div>';
+  prog.textContent = '第 ' + (idx + 1) + ' / ' + queue.length + ' 张';
+  document.getElementById('btnShow').onclick = () => {
+    document.getElementById('answer').classList.add('show');
+    document.getElementById('btnShow').style.display = 'none';
+    document.querySelectorAll('.btn-know,.btn-dunno').forEach(b => b.style.display = 'block');
+  };
+  document.getElementById('btnKnow').onclick = () => review(true);
+  document.getElementById('btnDunno').onclick = () => review(false);
+}
+
+async function review(known) {
+  try {
+    const data = await api('/api/vocab/review', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Vocab-Pass': pass()},
+      body: JSON.stringify({word: current.word, known: known})
+    });
+    if (data.error) { alert(data.error); return; }
+    renderStats(data.counts);
+    idx++;
+    showCard();
+    loadList();
+  } catch (e) { alert(e.message); }
+}
+
+async function loadList() {
+  const data = await api('/api/vocab/all');
+  const el = document.getElementById('wordList');
+  el.innerHTML = data.words.map(w =>
+    '<div class="wrow"><span class="w">' + esc(w.word) + '</span>' +
+    '<span class="m">' + esc(w.meaning) + '</span>' +
+    '<span class="badge' + (w.due === null && w.learned !== null ? ' grad' : (w.learned === null ? ' fresh' : '')) + '">' + stageLabel(w) + '</span></div>'
+  ).join('');
+}
+
+document.querySelectorAll('.panel h2').forEach(h => {
+  h.onclick = () => h.parentElement.classList.toggle('open');
+});
+
+document.getElementById('btnAdd').onclick = async () => {
+  const msg = document.getElementById('addMsg');
+  const body = {
+    word: document.getElementById('f-word').value.trim(),
+    phonetic: document.getElementById('f-phonetic').value.trim(),
+    pos: document.getElementById('f-pos').value.trim(),
+    meaning: document.getElementById('f-meaning').value.trim(),
+    sentence: document.getElementById('f-sentence').value.trim(),
+    sentenceCn: document.getElementById('f-sentenceCn').value.trim(),
+    source: document.getElementById('f-source').value.trim()
+  };
+  if (!body.word || !body.meaning) { msg.textContent = '单词和意思必填'; msg.style.color = '#e53e3e'; return; }
+  try {
+    const data = await api('/api/vocab/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Vocab-Pass': pass()},
+      body: JSON.stringify(body)
+    });
+    if (data.error) { msg.textContent = data.error; msg.style.color = '#e53e3e'; return; }
+    msg.textContent = '已加入词库：' + data.word + '（刷新今日任务可见）';
+    msg.style.color = '#38a169';
+    ['f-word','f-phonetic','f-pos','f-meaning','f-sentence','f-sentenceCn','f-source'].forEach(id => document.getElementById(id).value = '');
+    loadToday();
+  } catch (e) { msg.textContent = e.message; msg.style.color = '#e53e3e'; }
+};
+
+loadToday().catch(e => {
+  document.getElementById('card').innerHTML = '<div class="done"><p>加载失败：' + esc(e.message) + '</p></div>';
+});
+</script>
+</body>
+</html>
