@@ -46,6 +46,11 @@ public class App {
     static final Path PERSONAL_SEED_FILE = DATA_DIR.resolve("seed.json");
     static final String PASS = System.getenv("VOCAB_PASS");
 
+    // 第 7 关「云同步」：PWA/APK 的整包数据（词库+进度）存这里，与背词模块的 words.json 互不干扰。
+    static final Path SYNC_FILE = DATA_DIR.resolve("sync-store.json");
+    static final Path SYNC_BACKUP_DIR = DATA_DIR.resolve("sync-backups");
+    static final Path APP_DIR = Paths.get("static", "app");
+
     static final Object LOCK = new Object();
     static List<WordRec> words = new ArrayList<>();
 
@@ -420,6 +425,61 @@ public class App {
         return PASS.equals(h);
     }
 
+    // 同步接口要被 GitHub Pages（https 源）和 APK（file 源）跨源调用，必须带 CORS 头。
+    static void cors(HttpExchange ex) {
+        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+        ex.getResponseHeaders().set("Access-Control-Allow-Headers", "X-Vocab-Pass, Content-Type");
+        ex.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    }
+
+    /** 读取已存的同步包络 {rev, savedAt, store}；不存在返回 null。 */
+    static Map<String, Object> readSyncEnvelope() throws IOException {
+        if (!Files.exists(SYNC_FILE)) return null;
+        Object parsed = Json.parse(Files.readString(SYNC_FILE, StandardCharsets.UTF_8));
+        if (parsed instanceof Map) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> m = (Map<String, Object>) parsed;
+            return m;
+        }
+        return null;
+    }
+
+    /** 写入同步包络：先把旧文件备份到 sync-backups/（只留最近 10 份），再原子替换。 */
+    static void writeSyncEnvelope(Map<String, Object> envelope) throws IOException {
+        Files.createDirectories(DATA_DIR);
+        if (Files.exists(SYNC_FILE)) {
+            Files.createDirectories(SYNC_BACKUP_DIR);
+            String stamp = java.time.LocalDateTime.now(ZONE)
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+            Files.copy(SYNC_FILE, SYNC_BACKUP_DIR.resolve("sync-" + stamp + ".json"),
+                    StandardCopyOption.REPLACE_EXISTING);
+            List<Path> backups = new ArrayList<>();
+            try (java.util.stream.Stream<Path> st = Files.list(SYNC_BACKUP_DIR)) {
+                st.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(backups::add);
+            }
+            backups.sort(null);
+            while (backups.size() > 10) {
+                Files.deleteIfExists(backups.remove(0));
+            }
+        }
+        Path tmp = DATA_DIR.resolve("sync-store.json.tmp");
+        Files.writeString(tmp, Json.write(envelope), StandardCharsets.UTF_8);
+        try {
+            Files.move(tmp, SYNC_FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            Files.move(tmp, SYNC_FILE, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    static String contentTypeOf(String name) {
+        if (name.endsWith(".html")) return "text/html; charset=utf-8";
+        if (name.endsWith(".js")) return "text/javascript; charset=utf-8";
+        if (name.endsWith(".json")) return "application/json; charset=utf-8";
+        if (name.endsWith(".png")) return "image/png";
+        if (name.endsWith(".css")) return "text/css; charset=utf-8";
+        return "application/octet-stream";
+    }
+
     @SuppressWarnings("unchecked")
     static Map<String, Object> readJsonBody(HttpExchange ex) throws IOException {
         String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -461,6 +521,33 @@ public class App {
             String path = ex.getRequestURI().getPath();
             String method = ex.getRequestMethod();
             try {
+                // 跨源预检（浏览器在带 X-Vocab-Pass 的请求前会先发 OPTIONS）。
+                if (method.equals("OPTIONS") && path.startsWith("/api/sync/")) {
+                    cors(ex);
+                    ex.sendResponseHeaders(204, -1);
+                    return;
+                }
+                // /app/ 是背词 PWA 的服务器同源副本：浏览器从 https 页面调 http 接口会被拦，
+                // 从服务器自己的 http 页面调则没问题，所以在这里也托管一份相同文件。
+                if (path.equals("/app")) {
+                    ex.getResponseHeaders().set("Location", "/app/");
+                    ex.sendResponseHeaders(302, -1);
+                    return;
+                }
+                if (path.startsWith("/app/")) {
+                    String rel = path.substring("/app/".length());
+                    if (rel.isBlank()) rel = "index.html";
+                    Path f = APP_DIR.resolve(rel).normalize();
+                    if (!f.startsWith(APP_DIR) || !Files.isRegularFile(f)) {
+                        send(ex, 404, "text/plain; charset=utf-8", "Not Found");
+                        return;
+                    }
+                    byte[] bytes = Files.readAllBytes(f);
+                    ex.getResponseHeaders().set("Content-Type", contentTypeOf(f.getFileName().toString()));
+                    ex.sendResponseHeaders(200, bytes.length);
+                    try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+                    return;
+                }
                 switch (path) {
                     case "/": {
                         byte[] html = Files.readAllBytes(Paths.get("static", "index.html"));
@@ -562,6 +649,50 @@ public class App {
                             words.add(w);
                             saveWords();
                             sendJson(ex, 200, w.toMap());
+                        }
+                        break;
+                    }
+                    case "/api/sync/store": {
+                        cors(ex);
+                        if (!checkPass(ex)) { sendJson(ex, 401, error("口令不对或服务器未设置 VOCAB_PASS")); break; }
+                        if (method.equals("GET")) {
+                            synchronized (LOCK) {
+                                Map<String, Object> env = readSyncEnvelope();
+                                Map<String, Object> m = new LinkedHashMap<>();
+                                if (env == null) {
+                                    m.put("exists", false);
+                                } else {
+                                    m.put("exists", true);
+                                    m.putAll(env);
+                                }
+                                sendJson(ex, 200, m);
+                            }
+                        } else if (method.equals("POST")) {
+                            Map<String, Object> body = readJsonBody(ex);
+                            Object storeObj = body.get("store");
+                            if (!(storeObj instanceof Map) || !(((Map<?, ?>) storeObj).get("words") instanceof List)) {
+                                sendJson(ex, 400, error("数据格式不对：缺少 store.words"));
+                                break;
+                            }
+                            @SuppressWarnings("unchecked")
+                            Map<String, Object> storeMap = (Map<String, Object>) storeObj;
+                            long rev = 0;
+                            Object revObj = body.get("rev");
+                            if (revObj instanceof Number) rev = ((Number) revObj).longValue();
+                            synchronized (LOCK) {
+                                Map<String, Object> env = new LinkedHashMap<>();
+                                env.put("rev", rev);
+                                env.put("savedAt", java.time.LocalDateTime.now(ZONE).toString());
+                                env.put("store", storeMap);
+                                writeSyncEnvelope(env);
+                                Map<String, Object> m = new LinkedHashMap<>();
+                                m.put("ok", true);
+                                m.put("rev", rev);
+                                m.put("words", ((List<?>) storeMap.get("words")).size());
+                                sendJson(ex, 200, m);
+                            }
+                        } else {
+                            sendJson(ex, 405, error("只支持 GET / POST"));
                         }
                         break;
                     }
