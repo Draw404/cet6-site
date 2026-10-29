@@ -166,6 +166,11 @@
     flex: none; width: 42px; height: 42px; min-height: 42px; padding: 0; border-radius: 50%;
     background: var(--brand-soft); color: var(--brand-ink); font-size: 19px; line-height: 1;
   }
+  .speak.auto {
+    width: auto; padding: 0 13px; border-radius: 999px;
+    background: var(--surface-2); color: var(--ink-3); font-size: 12.5px; font-weight: 700;
+  }
+  .speak.auto.on { background: var(--brand-soft); color: var(--brand-ink); }
   .phonetic { font-family: var(--disp); color: var(--ink-3); font-size: 17px; margin-top: 6px; }
   .pos { color: var(--ink-2); font-size: 14px; margin-top: 6px; }
   .source { color: var(--ink-3); font-size: 12px; margin-top: 10px; }
@@ -785,15 +790,26 @@ function stageDotsHtml(w) {
 }
 
 function speak(text) {
+  const t = (text == null ? '' : String(text)).trim();
+  if (!t) return;
+  // APK 里优先走原生 TTS 桥：WebView 自带的 Web Speech 接口在多数安卓机上无声。
+  try { if (window.AndroidBridge && typeof AndroidBridge.speak === 'function') { AndroidBridge.speak(t); return; } } catch (e) {}
   try {
     if (!('speechSynthesis' in window)) return;
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
+    const u = new SpeechSynthesisUtterance(t);
     u.lang = 'en-US';
     u.rate = 0.92;
     speechSynthesis.speak(u);
   } catch (e) { /* 无朗读引擎时静默 */ }
 }
+
+function stopSpeak() {
+  try { if (window.AndroidBridge && typeof AndroidBridge.stopSpeak === 'function') AndroidBridge.stopSpeak(); } catch (e) {}
+  try { if ('speechSynthesis' in window) speechSynthesis.cancel(); } catch (e) {}
+}
+
+function autoSpeakOn() { return store.autoSpeak !== false; }
 
 function examName() {
   const e = (store.exam || '').trim();
@@ -1084,7 +1100,8 @@ function showCard() {
     '<div class="card-top"><div class="tag' + tagCls + '">' + tag + '</div>' +
     '<div class="dots">' + stageDotsHtml(current) + '</div></div>' +
     '<div class="word-row"><div class="word">' + esc(current.word) + '</div>' +
-    '<button class="speak" id="btnSpeak" title="朗读单词">🔊</button></div>' +
+    '<button class="speak" id="btnSpeak" title="朗读单词">🔊</button>' +
+    '<button class="speak auto' + (autoSpeakOn() ? ' on' : '') + '" id="btnAutoSpeak" title="每出现一个新词就自动朗读（点此开关）">自动</button></div>' +
     (current.phonetic ? '<div class="phonetic">' + esc(current.phonetic) + '</div>' : '') +
     (current.pos ? '<div class="pos">' + esc(current.pos) + '</div>' : '') +
     (current.source ? '<div class="source">' + esc(current.source) + '</div>' : '') +
@@ -1102,6 +1119,14 @@ function showCard() {
     '<div class="kbd-hint">空格 显示答案 · 1 不认识 · 2 认识</div>';
   prog.textContent = '第 ' + (idx + 1) + ' / ' + queue.length + ' 张';
   document.getElementById('btnSpeak').onclick = () => speak(current.word);
+  const btnAuto = document.getElementById('btnAutoSpeak');
+  btnAuto.onclick = () => {
+    store.autoSpeak = !autoSpeakOn();
+    save(false); // 只是本机偏好，不打修订号时间戳
+    btnAuto.classList.toggle('on', store.autoSpeak);
+    if (store.autoSpeak) speak(current.word); else stopSpeak();
+  };
+  if (autoSpeakOn() && (window.__currentView || 'review') === 'review') speak(current.word);
   document.getElementById('btnShow').onclick = showAnswer;
   document.getElementById('btnKnow').onclick = () => review(true);
   document.getElementById('btnDunno').onclick = () => review(false);
@@ -1504,6 +1529,13 @@ document.getElementById('btnSyncNow').onclick = () => doSync('auto');
 document.getElementById('btnSyncPush').onclick = () => doSync('push');
 document.getElementById('btnSyncPull').onclick = () => doSync('pull');
 renderSyncInfo(null);
+
+/* 自动朗读只在背词页真的出现在眼前时才出声：在别的页面切回背词页时补念当前词 */
+const __switchViewOrig = window.switchView;
+window.switchView = function (v) {
+  __switchViewOrig(v);
+  if (v === 'review' && autoSpeakOn() && current) speak(current.word);
+};
 
 /* 打开应用时：若刚拉取过就提示；否则云端更新时安静地自动拉下来（只拉不推，不会覆盖云端） */
 (async () => {
@@ -1928,6 +1960,7 @@ function renderQuizQ() {
     (answered
       ? '<button class="btn-add" data-act="next" style="background:var(--brand);margin-top:12px;">' + (quiz.i + 1 >= quiz.items.length ? '看结果' : '下一题 →') + '</button>'
       : '<div class="quiz-meta">选一个你认为对的意思</div>');
+  if (!answered && autoSpeakOn()) speak(w.word);
 }
 function endQuiz() {
   const box = document.getElementById('quizBox');

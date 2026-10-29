@@ -49,6 +49,11 @@ public class App {
     // 第 7 关「云同步」：PWA/APK 的整包数据（词库+进度）存这里，与背词模块的 words.json 互不干扰。
     static final Path SYNC_FILE = DATA_DIR.resolve("sync-store.json");
     static final Path SYNC_BACKUP_DIR = DATA_DIR.resolve("sync-backups");
+    // 第 8 关：云同步多槽位。每个口令一个独立槽位（文件名＝口令的 SHA-256，互不干扰）；
+    // 合法口令＝站长 VOCAB_PASS ＋ data/passes.txt 里逐行列出的口令（给同学发口令时往该文件加一行，无需重启）。
+    static final Path SYNC_SLOTS_DIR = DATA_DIR.resolve("sync-slots");
+    static final Path SYNC_SLOT_BACKUP_DIR = DATA_DIR.resolve("sync-slot-backups");
+    static final Path PASSES_FILE = DATA_DIR.resolve("passes.txt");
     static final Path APP_DIR = Paths.get("static", "app");
 
     static final Object LOCK = new Object();
@@ -425,6 +430,54 @@ public class App {
         return PASS.equals(h);
     }
 
+    static String passOf(HttpExchange ex) {
+        return ex.getRequestHeaders().getFirst("X-Vocab-Pass");
+    }
+
+    /** 同步接口的口令校验：站长口令，或 data/passes.txt 里登记过的口令（每次现读，加口令不用重启）。 */
+    static boolean checkSyncPass(String h) {
+        if (h == null || h.isBlank()) return false;
+        if (PASS != null && !PASS.isBlank() && PASS.equals(h)) return true;
+        try {
+            if (Files.exists(PASSES_FILE)) {
+                for (String line : Files.readAllLines(PASSES_FILE, StandardCharsets.UTF_8)) {
+                    String p = line.trim();
+                    if (!p.isEmpty() && !p.startsWith("#") && p.equals(h)) return true;
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    static String slotKey(String pass) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(pass.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format("%02x", b));
+            return sb.toString();
+        } catch (Exception e) { throw new RuntimeException(e); }
+    }
+
+    static Path slotFile(String pass) {
+        return SYNC_SLOTS_DIR.resolve(slotKey(pass) + ".json");
+    }
+
+    /** 旧版单槽数据迁移：把 data/sync-store.json 复制进站长自己的槽位（原文件留作备用）。 */
+    static void migrateLegacySync() {
+        try {
+            if (PASS == null || PASS.isBlank()) return;
+            if (!Files.exists(SYNC_FILE)) return;
+            Path ownerSlot = slotFile(PASS);
+            if (Files.exists(ownerSlot)) return;
+            Files.createDirectories(SYNC_SLOTS_DIR);
+            Files.copy(SYNC_FILE, ownerSlot);
+            System.out.println("已把旧单槽同步数据迁移到站长槽位");
+        } catch (Exception e) {
+            System.out.println("同步数据迁移失败：" + e.getMessage());
+        }
+    }
+
     // 同步接口要被 GitHub Pages（https 源）和 APK（file 源）跨源调用，必须带 CORS 头。
     static void cors(HttpExchange ex) {
         ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
@@ -433,9 +486,10 @@ public class App {
     }
 
     /** 读取已存的同步包络 {rev, savedAt, store}；不存在返回 null。 */
-    static Map<String, Object> readSyncEnvelope() throws IOException {
-        if (!Files.exists(SYNC_FILE)) return null;
-        Object parsed = Json.parse(Files.readString(SYNC_FILE, StandardCharsets.UTF_8));
+    static Map<String, Object> readSyncEnvelope(String pass) throws IOException {
+        Path f = slotFile(pass);
+        if (!Files.exists(f)) return null;
+        Object parsed = Json.parse(Files.readString(f, StandardCharsets.UTF_8));
         if (parsed instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> m = (Map<String, Object>) parsed;
@@ -444,30 +498,32 @@ public class App {
         return null;
     }
 
-    /** 写入同步包络：先把旧文件备份到 sync-backups/（只留最近 10 份），再原子替换。 */
-    static void writeSyncEnvelope(Map<String, Object> envelope) throws IOException {
-        Files.createDirectories(DATA_DIR);
-        if (Files.exists(SYNC_FILE)) {
-            Files.createDirectories(SYNC_BACKUP_DIR);
+    /** 写入同步包络到该口令的槽位：先把该槽旧文件备份到 sync-slot-backups/（每槽留最近 10 份），再原子替换。 */
+    static void writeSyncEnvelope(String pass, Map<String, Object> envelope) throws IOException {
+        Files.createDirectories(SYNC_SLOTS_DIR);
+        Path target = slotFile(pass);
+        String key = slotKey(pass);
+        if (Files.exists(target)) {
+            Files.createDirectories(SYNC_SLOT_BACKUP_DIR);
             String stamp = java.time.LocalDateTime.now(ZONE)
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-            Files.copy(SYNC_FILE, SYNC_BACKUP_DIR.resolve("sync-" + stamp + ".json"),
+            Files.copy(target, SYNC_SLOT_BACKUP_DIR.resolve(key + "-" + stamp + ".json"),
                     StandardCopyOption.REPLACE_EXISTING);
             List<Path> backups = new ArrayList<>();
-            try (java.util.stream.Stream<Path> st = Files.list(SYNC_BACKUP_DIR)) {
-                st.filter(p -> p.getFileName().toString().endsWith(".json")).forEach(backups::add);
+            try (java.util.stream.Stream<Path> st = Files.list(SYNC_SLOT_BACKUP_DIR)) {
+                st.filter(p -> p.getFileName().toString().startsWith(key + "-")).forEach(backups::add);
             }
             backups.sort(null);
             while (backups.size() > 10) {
                 Files.deleteIfExists(backups.remove(0));
             }
         }
-        Path tmp = DATA_DIR.resolve("sync-store.json.tmp");
+        Path tmp = SYNC_SLOTS_DIR.resolve(key + ".json.tmp");
         Files.writeString(tmp, Json.write(envelope), StandardCharsets.UTF_8);
         try {
-            Files.move(tmp, SYNC_FILE, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (Exception e) {
-            Files.move(tmp, SYNC_FILE, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -512,6 +568,7 @@ public class App {
     // ---------------- 主程序 ----------------
     public static void main(String[] args) throws Exception {
         loadWords();
+        migrateLegacySync();
         List<String> quotes = Files.readAllLines(Paths.get("quotes.txt"), StandardCharsets.UTF_8);
 
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
@@ -654,10 +711,11 @@ public class App {
                     }
                     case "/api/sync/store": {
                         cors(ex);
-                        if (!checkPass(ex)) { sendJson(ex, 401, error("口令不对或服务器未设置 VOCAB_PASS")); break; }
+                        String syncPass = passOf(ex);
+                        if (!checkSyncPass(syncPass)) { sendJson(ex, 401, error("口令不对或未在服务器登记")); break; }
                         if (method.equals("GET")) {
                             synchronized (LOCK) {
-                                Map<String, Object> env = readSyncEnvelope();
+                                Map<String, Object> env = readSyncEnvelope(syncPass);
                                 Map<String, Object> m = new LinkedHashMap<>();
                                 if (env == null) {
                                     m.put("exists", false);
@@ -684,7 +742,7 @@ public class App {
                                 env.put("rev", rev);
                                 env.put("savedAt", java.time.LocalDateTime.now(ZONE).toString());
                                 env.put("store", storeMap);
-                                writeSyncEnvelope(env);
+                                writeSyncEnvelope(syncPass, env);
                                 Map<String, Object> m = new LinkedHashMap<>();
                                 m.put("ok", true);
                                 m.put("rev", rev);
